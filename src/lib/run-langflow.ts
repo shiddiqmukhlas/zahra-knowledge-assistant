@@ -82,173 +82,88 @@ export async function runLangflowChat(
   };
 }
 
-type LangflowStreamEvent = {
-  event?: string;
-  data?: {
-    chunk?: string;
-    result?: { session_id?: string; message?: string };
-  };
-};
+function openAiSseChunk(
+  encoder: TextEncoder,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  id: string,
+  created: number,
+  model: string,
+  delta: Record<string, string>,
+  finishReason: string | null,
+) {
+  controller.enqueue(
+    encoder.encode(
+      `data: ${JSON.stringify({
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+      })}\n\n`,
+    ),
+  );
+}
 
-/** Stream Langflow tokens as OpenAI SSE (for Beyond Presence). */
+/**
+ * Beyond Presence requires SSE. Langflow stream=true breaks this user's RAG flow,
+ * so we respond immediately then run Langflow with stream=false.
+ */
 export function streamLangflowChat(
   message: string,
   sessionId: string,
   model: string,
 ): ReadableStream<Uint8Array> {
-  if (!message.trim()) {
-    return errorStream("Message is required");
-  }
-
-  if (!isLangflowConfigured()) {
-    return errorStream("Langflow not configured");
-  }
-
-  const { baseUrl, flowId, apiKey } = getLangflowConfig();
-  const url = `${baseUrl!.replace(/\/$/, "")}/api/v1/run/${flowId}?stream=true`;
   const encoder = new TextEncoder();
   const id = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
   return new ReadableStream({
     async start(controller) {
-      const send = (payload: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+      const sendDelta = (delta: Record<string, string>, finish: string | null = null) => {
+        openAiSseChunk(encoder, controller, id, created, model, delta, finish);
       };
 
-      const sendError = (text: string) => {
-        send({
-          id,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-        });
-        send({
-          id,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-        });
+      const closeWithError = (text: string) => {
+        sendDelta({ role: "assistant" });
+        sendDelta({ content: text });
+        sendDelta({}, "stop");
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       };
 
+      if (!message.trim()) {
+        closeWithError("Pesan kosong.");
+        return;
+      }
+
+      if (!isLangflowConfigured()) {
+        closeWithError("Langflow belum dikonfigurasi di server.");
+        return;
+      }
+
+      sendDelta({ role: "assistant" });
+      sendDelta({
+        content: "Sebentar ya, saya cek dokumen perusahaan dulu... ",
+      });
+
       try {
-        const langflowRes = await fetch(url, {
-          method: "POST",
-          headers: langflowHeaders(baseUrl!, apiKey!),
-          body: JSON.stringify({
-            input_value: message,
-            input_type: "chat",
-            output_type: "chat",
-            session_id: sessionId,
-          }),
-        });
-
-        if (!langflowRes.ok) {
-          const raw = await langflowRes.text();
-          sendError(`Langflow error: ${raw.slice(0, 200)}`);
-          return;
+        const { reply } = await runLangflowChat(message, sessionId);
+        const chunks = reply.match(/\S+\s*|\s+/g) ?? [reply];
+        for (const chunk of chunks) {
+          sendDelta({ content: chunk });
         }
-
-        if (!langflowRes.body) {
-          sendError("Langflow returned empty stream");
-          return;
-        }
-
-        send({
-          id,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-        });
-
-        const reader = langflowRes.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let sentContent = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed === "data: [DONE]") continue;
-
-            let jsonStr = trimmed;
-            if (trimmed.startsWith("data:")) {
-              jsonStr = trimmed.slice(5).trim();
-            }
-
-            try {
-              const evt = JSON.parse(jsonStr) as LangflowStreamEvent;
-              if (evt.event === "token" && evt.data?.chunk) {
-                sentContent = true;
-                send({
-                  id,
-                  object: "chat.completion.chunk",
-                  created,
-                  model,
-                  choices: [
-                    { index: 0, delta: { content: evt.data.chunk }, finish_reason: null },
-                  ],
-                });
-              }
-            } catch {
-              // ignore non-json lines
-            }
-          }
-        }
-
-        if (!sentContent) {
-          const { reply } = await runLangflowChat(message, sessionId);
-          const chunks = reply.match(/\S+\s*|\s+/g) ?? [reply];
-          for (const chunk of chunks) {
-            send({
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model,
-              choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
-            });
-          }
-        }
-
-        send({
-          id,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-        });
+        sendDelta({}, "stop");
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Stream failed";
-        sendError(msg);
+        const msg =
+          err instanceof LangflowError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : "Gagal menghubungi Langflow.";
+        closeWithError(`Maaf, terjadi kesalahan: ${msg.slice(0, 200)}`);
       }
-    },
-  });
-}
-
-function errorStream(message: string): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({ error: message })}\n\n\ndata: [DONE]\n\n`,
-        ),
-      );
-      controller.close();
     },
   });
 }
