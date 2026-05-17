@@ -32,13 +32,18 @@ export async function runLangflowChat(
   const { baseUrl, flowId, apiKey } = getLangflowConfig();
   const url = `${baseUrl!.replace(/\/$/, "")}/api/v1/run/${flowId}?stream=false`;
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "x-api-key": apiKey!,
+  };
+  if (baseUrl!.includes("ngrok")) {
+    headers["ngrok-skip-browser-warning"] = "true";
+  }
+
   const langflowRes = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "x-api-key": apiKey!,
-    },
+    headers,
     body: JSON.stringify({
       input_value: message,
       input_type: "chat",

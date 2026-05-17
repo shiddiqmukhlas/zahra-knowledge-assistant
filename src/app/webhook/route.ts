@@ -13,7 +13,7 @@ export async function OPTIONS() {
 
 /**
  * Beyond Presence webhook events (Settings → Webhooks):
- *   POST https://zahra-knowledge-assistant.vercel.app/webhook
+ *   POST https://zahra-knowledge.vercel.app/webhook
  *
  * Also accepts OpenAI-style chat completion bodies on the same path
  * if you point External LLM base URL to .../webhook (non-standard).
