@@ -1,13 +1,20 @@
 import { corsHeaders } from "@/lib/api-cors";
 import {
   buildChatCompletion,
-  buildChatCompletionStream,
   getLastUserMessage,
   resolveSessionId,
   verifyLlmApiKey,
   type ChatCompletionRequest,
 } from "@/lib/openai-langflow";
-import { LangflowError, runLangflowChat } from "@/lib/run-langflow";
+import { LangflowError, runLangflowChat, streamLangflowChat } from "@/lib/run-langflow";
+
+const streamHeaders = {
+  ...corsHeaders,
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+};
 
 export async function handleChatCompletion(
   req: Request,
@@ -28,20 +35,14 @@ export async function handleChatCompletion(
   const sessionId = resolveSessionId(req, body);
   const model = body.model ?? "langflow";
 
+  if (body.stream) {
+    return new Response(streamLangflowChat(message, sessionId, model), {
+      headers: streamHeaders,
+    });
+  }
+
   try {
     const { reply } = await runLangflowChat(message, sessionId);
-
-    if (body.stream) {
-      return new Response(buildChatCompletionStream(reply, model), {
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
-      });
-    }
-
     return Response.json(buildChatCompletion(reply, model), { headers: corsHeaders });
   } catch (err) {
     if (err instanceof LangflowError) {

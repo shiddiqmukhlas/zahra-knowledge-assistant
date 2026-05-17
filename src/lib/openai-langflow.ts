@@ -34,7 +34,9 @@ export function verifyLlmApiKey(req: Request): boolean {
 
   const auth = req.headers.get("authorization");
   if (!auth?.startsWith("Bearer ")) return false;
-  return auth.slice(7) === expected;
+  const token = auth.slice(7);
+  if (token === "none" && expected === "none") return true;
+  return token === expected;
 }
 
 export function buildChatCompletion(

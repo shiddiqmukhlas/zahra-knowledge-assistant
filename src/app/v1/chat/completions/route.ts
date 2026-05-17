@@ -2,6 +2,8 @@ import { corsHeaders, optionsResponse } from "@/lib/api-cors";
 import { handleChatCompletion } from "@/lib/handle-chat-completion";
 import { isChatCompletionRequest, type ChatCompletionRequest } from "@/lib/openai-langflow";
 
+export const maxDuration = 60;
+
 export async function OPTIONS() {
   return optionsResponse();
 }

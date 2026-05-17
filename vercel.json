@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "src/app/v1/chat/completions/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/webhook/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/chat/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}
